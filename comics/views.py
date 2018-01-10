@@ -1,8 +1,8 @@
 from django.shortcuts import get_object_or_404, render
 from django.views.generic import ListView, DetailView
-from django.views.generic.edit import UpdateView
-from django.http import HttpResponseRedirect
-from .models import Series, Issue, Character, Arc, Team, Publisher, Creator, Settings
+from django.views.generic.edit import UpdateView, DeleteView
+from django.http import HttpResponseRedirect, JsonResponse
+from .models import Series, Issue, Character, Arc, Team, Publisher, Creator, Settings, Roles
 from .tasks import import_comic_files_task, reprocess_issue_task
 from .utils.comicimporter import ComicImporter
 
@@ -20,7 +20,13 @@ class SeriesView(DetailView):
 class IssueView(DetailView):
 	model = Issue
 	template_name = 'comics/issue.html'
-	
+
+	def get_context_data(self, **kwargs):
+		context = super(IssueView, self).get_context_data(**kwargs)
+		issue = self.get_object()
+		context['roles_list'] = Roles.objects.filter(issue=issue)
+		return context
+
 class CharacterView(DetailView):
 	model = Character
 	template_name = 'comics/character.html'
@@ -62,7 +68,8 @@ class CreatorView(DetailView):
 	def get_context_data(self, **kwargs):
 		context = super(CreatorView, self).get_context_data(**kwargs)
 		creator = self.get_object()
-		context['issue_list'] = creator.issue_set.all().order_by('series__name', 'number')
+		roles = Roles.objects.filter(creator=creator)
+		context['issue_list'] = Issue.objects.filter(id__in=roles.values('issue_id'))
 		return context
 
 class ServerSettingsView(UpdateView):
@@ -86,6 +93,10 @@ class IssueUpdateView(UpdateView):
 		self.object = form.save()
 		return render(self.request, 'comics/issue_update_success.html', {'issue-update': self.object})
 
+class IssueDeleteView(DeleteView):
+	model = Issue
+	success_url = '/'
+
 def read(request, issue_id):
 	issue = get_object_or_404(Issue, pk=issue_id)
 	return render(request, 'comics/read.html', {'issue': issue})
@@ -97,3 +108,19 @@ def importer(request):
 def reprocess(request, issue_id):
 	reprocess_issue_task.delay(issue_id)
 	return HttpResponseRedirect('/issue/' + issue_id)
+
+def update_issue_status(request, issue_id):
+	issue = Issue.objects.get(pk=issue_id)
+
+	if request.GET.get('complete', '') == '1':
+		issue.leaf = 1
+		issue.status = 2
+		issue.save()
+	else:
+		issue.leaf = int(request.GET.get('leaf', ''))
+		issue.status = 1
+		issue.save()
+
+	data = { 'saved': 1 }
+
+	return JsonResponse(data)
